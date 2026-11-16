@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 from django.conf import settings
+from core.fields import EncryptedCharField, EncryptedURLField
 import os
 
 class EPGSource(models.Model):
@@ -29,10 +30,10 @@ class EPGSource(models.Model):
 
     name = models.CharField(max_length=255, unique=True)
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES)
-    url = models.URLField(max_length=1000, blank=True, null=True)  # For XMLTV
-    username = models.CharField(max_length=255, blank=True, null=True,
+    url = EncryptedURLField(max_length=1000, blank=True, null=True)  # For XMLTV
+    username = EncryptedCharField(max_length=255, blank=True, null=True,
                                help_text='Username for credential-based EPG sources (e.g. Schedules Direct)')
-    password = models.CharField(max_length=255, blank=True, null=True,
+    password = EncryptedCharField(max_length=255, blank=True, null=True,
                                help_text='Password for credential-based EPG sources (e.g. Schedules Direct)')
     is_active = models.BooleanField(default=True)
     file_path = models.CharField(max_length=1024, blank=True, null=True)

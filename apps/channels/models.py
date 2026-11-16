@@ -1,6 +1,7 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.conf import settings
+from core.fields import EncryptedURLField
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.live_proxy.redis_keys import RedisKeys
@@ -96,7 +97,8 @@ class Stream(models.Model):
     """
 
     name = models.CharField(max_length=512, default="Default Stream", db_index=True)
-    url = models.URLField(max_length=8192, blank=True, null=True)
+    # Provider stream URLs usually carry the account login (/live/user/pass/).
+    url = EncryptedURLField(max_length=8192, blank=True, null=True)
     m3u_account = models.ForeignKey(
         M3UAccount,
         on_delete=models.CASCADE,

@@ -23,6 +23,13 @@ from dispatcharr.settings import *  # noqa: F401,F403
 
 TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
 
+# Provider credentials are encrypted at rest (core.encryption). Give each test
+# run its own key so tests never create or read /data/credentials.key.
+if not os.environ.get("DISPATCHARR_CREDENTIALS_KEY"):
+    from cryptography.fernet import Fernet
+
+    os.environ["DISPATCHARR_CREDENTIALS_KEY"] = Fernet.generate_key().decode()
+
 # Signals PluginManager not to spawn its leader-election background thread --
 # unit tests construct bare PluginManager() instances liberally (bypassing
 # the process singleton for isolation), and a real daemon thread per

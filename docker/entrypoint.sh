@@ -253,7 +253,8 @@ for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL
                 DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES \
                 DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE \
                 DISPATCHARR_DEBUG DISPATCHARR_ENABLE_IP_LOOKUP LIBVA_DRIVER_NAME LIBVA_DRIVERS_PATH \
-                LD_LIBRARY_PATH DISPATCHARR_LOG_DIR TMDB_API_KEY OMDB_API_KEY; do
+                LD_LIBRARY_PATH DISPATCHARR_LOG_DIR TMDB_API_KEY OMDB_API_KEY \
+                DISPATCHARR_CREDENTIALS_KEY DISPATCHARR_CREDENTIALS_KEY_FILE; do
     if [ -n "${!_opt_var+x}" ]; then
         variables+=("$_opt_var")
     fi
@@ -315,6 +316,30 @@ chown "$PUID:$PGID" "$LOG_FILE_DIR" "$LOG_FILE_DIR"/config \
 exec 3>&1
 exec > >({ supervise_log_collector \
     "$POSTGRES_USER" "$VIRTUAL_ENV/bin/python" "$LOG_FILE_DIR"; } >&3 2>&3) 2>&1
+
+# Key for provider credentials encrypted at rest (core/encryption.py). Created
+# here, like /data/jwt, so it exists before migrate encrypts existing rows and
+# belongs to the app user even when a root celery process would otherwise make
+# it first. Skipped when DISPATCHARR_CREDENTIALS_KEY is set; a key file supplied
+# through DISPATCHARR_CREDENTIALS_KEY_FILE (e.g. a Docker secret) is left alone.
+if [ -z "${DISPATCHARR_CREDENTIALS_KEY:-}" ] && [ -z "${DISPATCHARR_CREDENTIALS_KEY_FILE:-}" ]; then
+  CREDENTIALS_KEY_FILE=/data/credentials.key
+  if [ ! -s "$CREDENTIALS_KEY_FILE" ]; then
+    echo "Generating credentials encryption key..."
+    old_umask=$(umask)
+    umask 077
+    # ln, not mv: never replace a key another container created meanwhile.
+    if tmpfile="$(mktemp "${CREDENTIALS_KEY_FILE}.XXXXXX")" &&
+      "$VIRTUAL_ENV/bin/python" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" >"$tmpfile"; then
+      ln "$tmpfile" "$CREDENTIALS_KEY_FILE" 2>/dev/null || [ -s "$CREDENTIALS_KEY_FILE" ] || echo "Credentials key generation failed"
+    else
+      echo "Credentials key generation failed"
+    fi
+    rm -f "$tmpfile"
+    umask $old_umask
+  fi
+  chown "$PUID:$PGID" "$CREDENTIALS_KEY_FILE" 2>/dev/null || true
+fi
 
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before

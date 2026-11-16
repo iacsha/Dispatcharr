@@ -164,7 +164,8 @@ class Client:
             'auth_timestamp': datetime.utcnow().timestamp(),
             'user_info': {
                 'username': user_info.get('username'),
-                'password': user_info.get('password'),
+                # The password is not kept: it is already on the account,
+                # encrypted, and this JSON is stored in plain text.
                 'message': user_info.get('message'),
                 'auth': user_info.get('auth'),
                 'status': user_info.get('status'),

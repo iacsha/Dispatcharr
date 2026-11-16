@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.core.exceptions import ValidationError
+from core.fields import EncryptedCharField, EncryptedURLField
 from core.models import CoreSettings, UserAgent
 import re
 from django.dispatch import receiver
@@ -30,7 +31,7 @@ class M3UAccount(models.Model):
     name = models.CharField(
         max_length=255, unique=True, help_text="Unique name for this M3U account"
     )
-    server_url = models.URLField(
+    server_url = EncryptedURLField(
         max_length=1000,
         blank=True,
         null=True,
@@ -86,8 +87,8 @@ class M3UAccount(models.Model):
         related_name="m3u_accounts",
     )
     account_type = models.CharField(choices=Types.choices, default=Types.STADNARD)
-    username = models.CharField(max_length=255, null=True, blank=True)
-    password = models.CharField(max_length=255, null=True, blank=True)
+    username = EncryptedCharField(max_length=255, null=True, blank=True)
+    password = EncryptedCharField(max_length=255, null=True, blank=True)
     custom_properties = models.JSONField(default=dict, blank=True, null=True)
     refresh_interval = models.IntegerField(default=0)
     refresh_task = models.ForeignKey(
@@ -268,10 +269,10 @@ class M3UAccountProfile(models.Model):
     is_active = models.BooleanField(
         default=True, help_text="Set to false to deactivate this profile"
     )
-    search_pattern = models.CharField(
+    search_pattern = EncryptedCharField(
         max_length=255,
     )
-    replace_pattern = models.CharField(
+    replace_pattern = EncryptedCharField(
         max_length=255,
     )
     current_viewers = models.PositiveIntegerField(default=0)

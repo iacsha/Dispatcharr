@@ -40,6 +40,10 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.3",
     "packaging",
+    # Fernet encryption of stored provider credentials (core/encryption.py).
+    # Already installed through other dependencies; listed because it is now
+    # imported directly.
+    "cryptography>=43.0",
 ]
 
 [build-system]
