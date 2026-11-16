@@ -43,8 +43,24 @@ class CoreConfig(AppConfig):
             # Database not migrated yet: the collector keeps its defaults.
             pass
 
+        self._check_credentials_key()
+
         # Sync developer notifications and check for version updates on startup
         self._sync_developer_notifications()
+
+    def _check_credentials_key(self):
+        """Log CRITICAL at startup if stored credentials don't open with the key."""
+        from django.db import close_old_connections, connection
+        import logging
+
+        try:
+            from core.encryption import check_stored_credentials
+
+            check_stored_credentials(connection)
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Credentials key check skipped: {e}")
+        finally:
+            close_old_connections()
 
     def _sync_developer_notifications(self):
         """Sync developer notifications from JSON file to database."""

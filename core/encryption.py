@@ -19,8 +19,11 @@ encrypt them in place.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -44,6 +47,45 @@ class CredentialsKeyError(RuntimeError):
 
 def is_encrypted(value: object) -> bool:
     return isinstance(value, str) and value.startswith(PREFIX)
+
+
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
+
+
+def looks_like_token(value: object) -> bool:
+    """Whether ``value`` is ``PREFIX`` followed by a well-formed Fernet token.
+
+    Checks only the shape (version byte, minimum length, block-aligned body),
+    not the signature, so it also holds for tokens made with another key.
+    """
+    if not is_encrypted(value):
+        return False
+    token = value[len(PREFIX):]
+    if not _TOKEN_RE.match(token):
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(token)
+    except (binascii.Error, ValueError):
+        return False
+    # version (1) + timestamp (8) + IV (16) + AES blocks (16n, n >= 1) + HMAC (32)
+    return raw[:1] == b"\x80" and len(raw) >= 73 and (len(raw) - 57) % 16 == 0
+
+
+def is_ciphertext(value: object) -> bool:
+    """Whether ``value`` is stored ciphertext rather than plain text that looks like it.
+
+    True when it decrypts with the configured key or, failing that, is still a
+    well-formed token (encrypted under another key). Such values are written back
+    unchanged: encrypting them again would wrap the only copy of the credential
+    in a second layer that the original key cannot open.
+    """
+    if not is_encrypted(value):
+        return False
+    try:
+        decrypt(value)
+        return True
+    except CredentialsKeyError:
+        return looks_like_token(value)
 
 
 def key_file_path() -> Path:
@@ -139,6 +181,48 @@ def reset_cache() -> None:
         _cached = None
 
 
+# One sample per column is enough: every row is encrypted with the same key.
+_CHECK_COLUMNS = (
+    ("m3u_m3uaccount", "password"),
+    ("m3u_m3uaccount", "server_url"),
+    ("epg_epgsource", "password"),
+    ("epg_epgsource", "url"),
+)
+
+
+def check_stored_credentials(connection) -> bool:
+    """Log CRITICAL when stored credentials do not open with the configured key.
+
+    Run once at startup. A lost or replaced key otherwise shows up only as one
+    error on the first provider request, while the web UI keeps running. Returns
+    False when a sampled value is a well-formed token the key cannot decrypt.
+    """
+    qn = connection.ops.quote_name
+    with connection.cursor() as cursor:
+        for table, column in _CHECK_COLUMNS:
+            cursor.execute(
+                f"SELECT {qn(column)} FROM {qn(table)} WHERE {qn(column)} LIKE %s LIMIT 1",
+                [PREFIX + "%"],
+            )
+            row = cursor.fetchone()
+            if row is None or not looks_like_token(row[0]):
+                continue
+            try:
+                decrypt(row[0])
+            except CredentialsKeyError as exc:
+                configured = os.environ.get(KEY_ENV, "").strip()
+                source = KEY_ENV if configured else str(key_file_path())
+                logger.critical(
+                    "%s (key source: %s). M3U and EPG refreshes and playback for "
+                    "accounts saved under the previous key will fail. Restore that key "
+                    "(%s, or the file named by %s, default %s) and restart; re-enter "
+                    "the affected credentials only if the key is lost for good.",
+                    exc, source, KEY_ENV, KEY_FILE_ENV, DEFAULT_KEY_FILE,
+                )
+                return False
+    return True
+
+
 _BATCH = 2000
 
 
@@ -182,14 +266,7 @@ def _rewrite_columns(schema_editor, table: str, columns: list[str], transform) -
 
 
 def _encrypt_stored(value: str) -> str:
-    if is_encrypted(value):
-        try:
-            decrypt(value)
-            return value
-        except CredentialsKeyError:
-            # Plain text that only looks like ciphertext.
-            pass
-    return encrypt(value)
+    return value if is_ciphertext(value) else encrypt(value)
 
 
 def encrypt_columns(table: str, columns: list[str]):

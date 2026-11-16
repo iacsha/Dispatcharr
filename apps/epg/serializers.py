@@ -3,6 +3,7 @@ from apps.epg.sd_utils import (
     sd_credential_fingerprint,
 )
 from apps.epg.utils import sd_poster_proxy_path
+from core.fields import has_undecryptable
 from core.utils import validate_flexible_url, build_absolute_uri_with_port
 from rest_framework import serializers
 from .models import EPGSource, EPGData, ProgramData
@@ -60,6 +61,8 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             ct = instance.refresh_task.crontab
             cron_expr = f'{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}'
         data['cron_expression'] = cron_expr
+        # Stored credentials the configured key cannot open (key lost or replaced).
+        data['credentials_undecryptable'] = has_undecryptable(instance, 'url', 'username', 'password')
         return data
 
     def update(self, instance, validated_data):

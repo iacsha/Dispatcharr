@@ -1,3 +1,4 @@
+from core.fields import has_undecryptable
 from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
@@ -247,6 +248,10 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None) if request else None
         if user is not None and getattr(user, "user_level", 0) >= 10:
             data["password"] = instance.password or ""
+        # Stored credentials the configured key cannot open (key lost or replaced).
+        data["credentials_undecryptable"] = has_undecryptable(
+            instance, "server_url", "username", "password"
+        )
 
         # Parse custom_properties to get VOD preference and auto_enable_new_groups settings
         custom_props = instance.custom_properties or {}

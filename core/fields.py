@@ -50,7 +50,17 @@ class EncryptedFieldMixin:
             return value
         if isinstance(value, UndecryptableValue):
             return str(value)
-        return encryption.encrypt(str(value))
+        value = str(value)
+        # Ciphertext coming back in as a plain string (an API client or form
+        # echoing what it was shown) is stored as is, never wrapped again.
+        if encryption.is_ciphertext(value):
+            return value
+        return encryption.encrypt(value)
+
+
+def has_undecryptable(instance, *fields: str) -> bool:
+    """Whether any of ``fields`` on ``instance`` could not be decrypted."""
+    return any(isinstance(getattr(instance, f, None), UndecryptableValue) for f in fields)
 
 
 class EncryptedCharField(EncryptedFieldMixin, models.CharField):

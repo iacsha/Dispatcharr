@@ -1,4 +1,5 @@
 """Encryption at rest of provider credentials (core.encryption, core.fields)."""
+import base64
 import os
 import stat
 import tempfile
@@ -101,6 +102,30 @@ class EncryptionTests(SimpleTestCase):
         with _key_env(key="not-a-fernet-key"):
             with self.assertRaises(encryption.CredentialsKeyError):
                 encryption.encrypt("pw")
+
+    def test_looks_like_token_checks_the_shape(self):
+        with _key_env(key=Fernet.generate_key().decode()):
+            token = encryption.encrypt("pw")
+        body = base64.urlsafe_b64decode(token[len(encryption.PREFIX):])
+        reshaped = lambda raw: encryption.PREFIX + base64.urlsafe_b64encode(raw).decode()
+        self.assertTrue(encryption.looks_like_token(token))
+        self.assertFalse(encryption.looks_like_token(token[len(encryption.PREFIX):]))
+        self.assertFalse(encryption.looks_like_token(encryption.PREFIX + "not-a-token"))
+        self.assertFalse(encryption.looks_like_token(encryption.PREFIX + "gAAAAA"))
+        self.assertFalse(encryption.looks_like_token(reshaped(b"\x81" + body[1:])))
+        self.assertFalse(encryption.looks_like_token(reshaped(body[:-1])))
+        self.assertFalse(encryption.looks_like_token(reshaped(body[:57])))
+
+    def test_is_ciphertext_keeps_tokens_from_another_key(self):
+        key_a = Fernet.generate_key().decode()
+        with _key_env(key=key_a):
+            token = encryption.encrypt("pw")
+            self.assertTrue(encryption.is_ciphertext(token))
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            self.assertTrue(encryption.is_ciphertext(token))
+            self.assertFalse(encryption.is_ciphertext(encryption.PREFIX + "not-a-token"))
+            self.assertFalse(encryption.is_ciphertext("plain"))
 
 
 class EncryptedFieldTests(TestCase):
@@ -209,6 +234,91 @@ class EncryptedFieldTests(TestCase):
         self.assertEqual(_raw("m3u_m3uaccount", "password", account.id), stored)
         encryption.reset_cache()
         self.assertEqual(M3UAccount.objects.get(pk=account.pk).password, "p1-secret")
+
+    def test_ciphertext_echoed_back_under_wrong_key_is_not_wrapped_again(self):
+        # An admin form under a lost key shows the ciphertext and posts it back
+        # as a plain string; wrapping it again would lose the password for good.
+        account = self._account()
+        stored = {c: _raw("m3u_m3uaccount", c, account.id) for c in ("username", "password")}
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            with mock.patch("core.fields._warned", True):
+                loaded = M3UAccount.objects.get(pk=account.pk)
+                loaded.password = str(loaded.password)
+                loaded.save()
+                M3UAccount.objects.filter(pk=account.pk).update(username=str(loaded.username))
+        for column, value in stored.items():
+            self.assertEqual(_raw("m3u_m3uaccount", column, account.id), value, column)
+        encryption.reset_cache()
+        fresh = M3UAccount.objects.get(pk=account.pk)
+        self.assertEqual((fresh.username, fresh.password), ("u1", "p1-secret"))
+
+    def test_ciphertext_echoed_back_under_right_key_is_stored_as_is(self):
+        account = self._account()
+        stored = _raw("m3u_m3uaccount", "password", account.id)
+        account.password = stored
+        account.save()
+        self.assertEqual(_raw("m3u_m3uaccount", "password", account.id), stored)
+        self.assertEqual(M3UAccount.objects.get(pk=account.pk).password, "p1-secret")
+
+    def test_api_flags_undecryptable_credentials(self):
+        from apps.epg.serializers import EPGSourceSerializer
+        from apps.m3u.serializers import M3UAccountSerializer
+
+        account = self._account()
+        source = EPGSource.objects.create(
+            name="SD", source_type="schedules_direct",
+            url="http://epg.test/xmltv.php", username="sd-user", password="sd-pass",
+        )
+        ctx = {"request": SimpleNamespace(user=SimpleNamespace(user_level=10))}
+
+        def flags():
+            m3u = M3UAccountSerializer(M3UAccount.objects.get(pk=account.pk), context=ctx).data
+            epg = EPGSourceSerializer(EPGSource.objects.get(pk=source.pk)).data
+            return m3u["credentials_undecryptable"], epg["credentials_undecryptable"]
+
+        self.assertEqual(flags(), (False, False))
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            with mock.patch("core.fields._warned", True):
+                self.assertEqual(flags(), (True, True))
+
+
+class CheckStoredCredentialsTests(TestCase):
+    def setUp(self):
+        encryption.reset_cache()
+        self.addCleanup(encryption.reset_cache)
+
+    def _account(self):
+        return M3UAccount.objects.create(
+            name="Enc XC", server_url="http://provider.test:8080", account_type="XC",
+            username="u1", password="p1-secret",
+        )
+
+    def test_no_stored_credentials_passes(self):
+        self.assertTrue(encryption.check_stored_credentials(connection))
+
+    def test_right_key_passes_quietly(self):
+        self._account()
+        with self.assertNoLogs("core.encryption", level="CRITICAL"):
+            self.assertTrue(encryption.check_stored_credentials(connection))
+
+    def test_wrong_key_logs_critical(self):
+        self._account()
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            with self.assertLogs("core.encryption", level="CRITICAL") as logs:
+                self.assertFalse(encryption.check_stored_credentials(connection))
+        self.assertIn(encryption.KEY_ENV, logs.output[0])
+        self.assertNotIn("p1-secret", logs.output[0])
+
+    def test_plain_text_lookalike_is_not_a_key_problem(self):
+        account = self._account()
+        for column in ("server_url", "password"):
+            _set_raw("m3u_m3uaccount", column, account.id, encryption.PREFIX + "not-a-token")
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            self.assertTrue(encryption.check_stored_credentials(connection))
 
 
 class EncryptColumnsMigrationTests(TestCase):
