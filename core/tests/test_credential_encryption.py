@@ -370,22 +370,77 @@ class EncryptColumnsMigrationTests(TestCase):
 
 
 class XtreamAccountInfoTests(SimpleTestCase):
-    def test_account_info_does_not_keep_the_password(self):
+    def test_account_info_does_not_keep_the_login(self):
         from core.xtream_codes import Client
 
         client = Client.__new__(Client)
         client.server_info = {
-            "user_info": {"username": "u1", "password": "p1-secret", "status": "Active"},
+            "user_info": {"username": "u1-login", "password": "p1-secret", "status": "Active"},
             "server_info": {},
         }
         info = client.get_account_info()
-        self.assertEqual(info["user_info"]["username"], "u1")
+        self.assertEqual(info["user_info"]["status"], "Active")
+        self.assertNotIn("username", info["user_info"])
         self.assertNotIn("password", info["user_info"])
+        self.assertNotIn("u1-login", repr(info))
         self.assertNotIn("p1-secret", repr(info))
 
 
+class ProfileAccountInfoLoginTests(TestCase):
+    def setUp(self):
+        encryption.reset_cache()
+        self.addCleanup(encryption.reset_cache)
+
+    def _profile(self, account_type="XC"):
+        account = M3UAccount.objects.create(
+            name="XC info", server_url="http://p.test:8080", account_type=account_type,
+            username="u1-login", password="p1-secret",
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile.custom_properties = {"user_info": {"status": "Active"}, "server_info": {"url": "p.test"}}
+        profile.save(update_fields=["custom_properties"])
+        return profile
+
+    def test_api_shows_the_username_without_storing_it(self):
+        from apps.m3u.serializers import M3UAccountProfileSerializer
+
+        profile = self._profile()
+        data = M3UAccountProfileSerializer(profile).data
+        self.assertEqual(data["custom_properties"]["user_info"]["username"], "u1-login")
+        self.assertNotIn("password", data["custom_properties"]["user_info"])
+        profile.refresh_from_db()
+        self.assertNotIn("username", profile.custom_properties["user_info"])
+
+        # The edit form posts custom_properties back as it was shown.
+        form = M3UAccountProfileSerializer(
+            profile, data={"custom_properties": data["custom_properties"]}, partial=True
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        profile.refresh_from_db()
+        self.assertEqual(profile.custom_properties["user_info"], {"status": "Active"})
+        self.assertNotIn("u1-login", repr(profile.custom_properties))
+
+    def test_non_xc_accounts_get_no_username(self):
+        from apps.m3u.serializers import M3UAccountProfileSerializer
+
+        data = M3UAccountProfileSerializer(self._profile(account_type="STD")).data
+        self.assertNotIn("username", data["custom_properties"]["user_info"])
+
+    def test_undecryptable_login_is_not_shown(self):
+        from apps.m3u.serializers import M3UAccountProfileSerializer
+
+        profile = self._profile()
+        encryption.reset_cache()
+        with _key_env(key=Fernet.generate_key().decode()):
+            with mock.patch("core.fields._warned", True):
+                fresh = M3UAccountProfile.objects.get(pk=profile.pk)
+                data = M3UAccountProfileSerializer(fresh).data
+        self.assertNotIn("username", data["custom_properties"]["user_info"])
+
+
 class DropStoredXcPasswordsMigrationTests(TestCase):
-    def test_removes_only_the_echoed_password(self):
+    def test_removes_the_echoed_login(self):
         from importlib import import_module
 
         from django.apps import apps as django_apps
@@ -404,5 +459,5 @@ class DropStoredXcPasswordsMigrationTests(TestCase):
         profile.refresh_from_db()
         self.assertEqual(
             profile.custom_properties,
-            {"user_info": {"username": "u1", "status": "Active"}, "server_info": {"url": "p.test"}},
+            {"user_info": {"status": "Active"}, "server_info": {"url": "p.test"}},
         )

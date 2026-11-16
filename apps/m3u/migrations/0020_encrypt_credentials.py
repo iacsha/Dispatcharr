@@ -11,17 +11,18 @@ encrypt_profiles, decrypt_profiles = encrypt_columns(
 
 
 def drop_stored_xc_passwords(apps, schema_editor):
-    """Remove the provider-echoed password from saved XC account info.
+    """Remove the provider-echoed login from saved XC account info.
 
-    The account already holds the password (now encrypted); this JSON copy is
-    plain text and nothing reads it.
+    The account already holds the username and password (now encrypted); this
+    JSON copy is plain text. The profile API fills the username in for display.
     """
     M3UAccountProfile = apps.get_model("m3u", "M3UAccountProfile")
     for profile in M3UAccountProfile.objects.exclude(custom_properties=None).iterator():
         props = profile.custom_properties
         user_info = props.get("user_info") if isinstance(props, dict) else None
-        if isinstance(user_info, dict) and "password" in user_info:
-            user_info.pop("password")
+        if isinstance(user_info, dict) and ("password" in user_info or "username" in user_info):
+            user_info.pop("password", None)
+            user_info.pop("username", None)
             profile.save(update_fields=["custom_properties"])
 
 

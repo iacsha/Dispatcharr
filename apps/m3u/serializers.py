@@ -3,6 +3,7 @@ from core.utils import validate_flexible_url, ensure_custom_properties_dict
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from .models import M3UAccount, M3UFilter, ServerGroup, M3UAccountProfile
+from .credentials import get_transformed_credentials
 from .utils import parse_m3u_hash_keys
 from core.models import UserAgent
 from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
@@ -29,6 +30,29 @@ class M3UFilterSerializer(serializers.ModelSerializer):
             "order",
             "custom_properties",
         ]
+
+
+def _strip_cached_login(props):
+    """Drop username/password from cached XC ``user_info`` before storing it."""
+    user_info = props.get("user_info") if isinstance(props, dict) else None
+    if isinstance(user_info, dict) and ("username" in user_info or "password" in user_info):
+        kept = {k: v for k, v in user_info.items() if k not in ("username", "password")}
+        props = {**props, "user_info": kept}
+    return props
+
+
+def _profile_username(profile):
+    """The XC username this profile logs in with, or None if unavailable."""
+    account = profile.m3u_account
+    if account.account_type != "XC" or has_undecryptable(
+        account, "server_url", "username", "password"
+    ):
+        return None
+    try:
+        _, username, _ = get_transformed_credentials(account, profile)
+    except Exception:
+        return None
+    return username or None
 
 
 class M3UAccountProfileSerializer(serializers.ModelSerializer):
@@ -64,6 +88,24 @@ class M3UAccountProfileSerializer(serializers.ModelSerializer):
             'replace_pattern': {'required': False, 'allow_blank': True},
             'exp_date': {'required': False, 'allow_null': True},
         }
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Cached XC account info no longer stores the login (it is plain-text
+        # JSON); show the profile's decrypted username so the UI is unchanged.
+        props = data.get("custom_properties")
+        user_info = props.get("user_info") if isinstance(props, dict) else None
+        if isinstance(user_info, dict) and not user_info.get("username"):
+            username = _profile_username(instance)
+            if username:
+                data["custom_properties"] = {
+                    **props, "user_info": {**user_info, "username": username}
+                }
+        return data
+
+    def validate_custom_properties(self, value):
+        # Never store the login that to_representation adds for display.
+        return _strip_cached_login(value)
 
     def create(self, validated_data):
         m3u_account = self.context.get("m3u_account")

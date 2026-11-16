@@ -163,9 +163,9 @@ class Client:
             'last_refresh': datetime.utcnow().isoformat() + 'Z',  # Explicit UTC with Z suffix
             'auth_timestamp': datetime.utcnow().timestamp(),
             'user_info': {
-                'username': user_info.get('username'),
-                # The password is not kept: it is already on the account,
-                # encrypted, and this JSON is stored in plain text.
+                # The login (username and password) is not kept: it is already
+                # on the account, encrypted, and this JSON is stored in plain
+                # text. The profile API adds the username back when it serves it.
                 'message': user_info.get('message'),
                 'auth': user_info.get('auth'),
                 'status': user_info.get('status'),
